@@ -1,0 +1,222 @@
+{
+  "name": "Car Lead Capture → Gemini → Sheets → Calendar → Email",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "car-lead-capture",
+        "options": {}
+      },
+      "id": "3d2ecb69-0424-44ba-bf83-78bcd4f7ca12",
+      "name": "Lead Webhook1",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -1024,
+        864
+      ],
+      "webhookId": "aa9fea37-0c98-4056-abd6-5ed15c902c8a"
+    },
+    {
+      "parameters": {
+        "jsCode": "// This code:\n// - Reads the AI Agent / Gemini output\n// - Parses the JSON (even if wrapped in text/markdown)\n// - Merges with raw webhook data from Lead Webhook1\n// - Outputs: { name, email, phone, model, datetime, intent_score }\n\nconst out = [];\nconst items = $input.all();\n\nfunction safeParse(raw) {\n  if (!raw) return {};\n  if (typeof raw === 'object') return raw;\n\n  let txt = String(raw).trim();\n\n  // Strip ```json fences if present\n  txt = txt\n    .replace(/^```json/i, '')\n    .replace(/^```/, '')\n    .replace(/```$/, '')\n    .trim();\n\n  // First try direct JSON\n  try {\n    return JSON.parse(txt);\n  } catch (e) {}\n\n  // If that fails, try to extract the first { ... } block\n  const match = txt.match(/\\{[\\s\\S]*\\}/);\n  if (match) {\n    try {\n      return JSON.parse(match[0]);\n    } catch (e2) {}\n  }\n\n  return {};\n}\n\nitems.forEach((item) => {\n  const geminiJson = item.json || {};\n\n  // 1) Get content from AI Agent output\n  let content =\n    geminiJson.text ??\n    geminiJson.output ??\n    geminiJson.result ??\n    geminiJson.response ??\n    geminiJson;\n\n  const parsed = safeParse(content);\n\n  // 2) Get original webhook payload (single-item use case)\n  const webhook = $node[\"Lead Webhook1\"].json;\n  const body = webhook.body || webhook;\n\n  // 3) Compute intent_score safely\n  let score =\n    parsed.intent_score ??\n    parsed.intentScore ??\n    parsed.intent ??\n    null;\n\n  if (score == null) {\n    // Fallback if model didn't return any score\n    score = 0.5;\n  } else {\n    score = Number(score);\n    if (Number.isNaN(score)) score = 0.5;\n    if (score < 0) score = 0;\n    if (score > 1) score = 1;\n  }\n\n  // 4) Build final lead object\n  const lead = {\n    name: parsed.name ?? body.name ?? null,\n    email: body.email ?? null,\n    phone: parsed.phone ?? body.phone ?? null,\n    model: parsed.model ?? body.model ?? body.carModel ?? null,\n    datetime: parsed.datetime ?? body.datetime ?? body.dateTime ?? null,\n    intent_score: score,\n  };\n\n  out.push({ json: lead });\n});\n\nreturn out;\n"
+      },
+      "id": "ab41fbb5-36a4-42ca-ab4c-0cac40f90f78",
+      "name": "Shape Lead JSON1",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -288,
+        912
+      ]
+    },
+    {
+      "parameters": {
+        "calendar": {
+          "__rl": true,
+          "value": "=chaudharyvaibhavnandal@gmail.com",
+          "mode": "id"
+        },
+        "additionalFields": {
+          "attendees": [
+            "={{ $json.email }}"
+          ],
+          "conferenceDataUi": {
+            "conferenceDataValues": {
+              "conferenceSolution": "hangoutsMeet"
+            }
+          },
+          "description": "This is regarding the Car enquiry"
+        }
+      },
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1.3,
+      "position": [
+        -16,
+        960
+      ],
+      "id": "0feabacd-dd93-402c-a6e4-48ec9c5fe701",
+      "name": "Create an event",
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "kqZxFR3XcrmasgaO",
+          "name": "Google Calendar account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=You are a strict JSON API for car sales leads.\n\nYou will receive a JSON object representing a lead for a car enquiry.\n\nYour job:\n1. Read the input lead JSON.\n2. Normalise and return a SINGLE JSON object.\n3. OUTPUT ONLY RAW JSON. No explanations, no markdown, no extra text.\n\nThe JSON MUST have EXACTLY these keys:\n\n{\n  \"name\": {{ $json.body.name }} ,\n \"email\":  {{ $json.body.email }},\n\"phone\": {{ $json.body.phone }},\n  \"model\": {{ $json.body.model }},\n  \"datetime\": {{ $json.body.datetime }},\n  \"intent_score\": number\n}\n\nField rules:\n- name: use the customer's name if present, otherwise null.\n- phone: use any phone / mobile number in the input, otherwise null.\n- model: the car model they are interested in, otherwise null.\n- datetime: ISO-8601 string for the booking time if present (e.g. \"2025-12-10T15:30:00+05:30\"), otherwise null.\n\nintent_score rules (VERY IMPORTANT):\n- intent_score MUST be a number between 0 and 1 (inclusive).\n- 0.0 = no buying intent.\n- 0.5 = neutral / unclear intent.\n- 1.0 = very strong buying intent.\n- Never return null for intent_score.\n- If you are unsure, choose a value between 0.3 and 0.7 instead of 0 or 1.\n\nGeneral rules:\n- Always include all 5 keys, even if some values are null.\n- Do NOT wrap the JSON in ```json or any code fences.\n- Do NOT include any text before or after the JSON.\n- Do NOT add extra keys.\n\nINPUT LEAD JSON:\n{{$json.body}}\n",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3,
+      "position": [
+        -784,
+        848
+      ],
+      "id": "4571a925-59ea-4a56-ae21-9aa70e03d83d",
+      "name": "AI Agent"
+    },
+    {
+      "parameters": {
+        "modelName": "models/gemma-3-12b-it",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1,
+      "position": [
+        -800,
+        1088
+      ],
+      "id": "674895d5-b4c1-4f4b-b288-cc8f3670261d",
+      "name": "Google Gemini Chat Model",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "idNOAL4Tpci5GQPI",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "operation": "append",
+        "sheetId": "1cLM74W6hoIPoTDWQnF8o0RvLZliRj7ENkUKYdMojCdU",
+        "range": "=Sheet1!A:F",
+        "keyRow": "={{ 0 }}",
+        "options": {
+          "valueInputMode": "RAW"
+        }
+      },
+      "id": "66d85231-e0c2-44c7-b430-7ae9a8541751",
+      "name": "Log to Google Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 1,
+      "position": [
+        -80,
+        720
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "Vcc98Cu1XOR6RpDT",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "subject": "Your test-drive booking is confirmed",
+        "message": "=Hi {{$json.name || 'there'}},\n\nThanks for your interest in {{$json.model || 'our car models'}}.\n\nYour appointment is booked for {{$json.datetime}}.\n\nWe'll also send you a Google Calendar invite with the Google Meet link.\n\nBest,\nSales Team\n",
+        "toList": [
+          "={{ $json.email || $node[\"Lead Webhook1\"].json.body.email }}\n"
+        ],
+        "additionalFields": {}
+      },
+      "id": "8033b117-9a80-4e1a-b9be-35a0e7163fae",
+      "name": "Send Confirmation Email",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 1,
+      "position": [
+        32,
+        1168
+      ],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "nxS0bbHGFETaRk6G",
+          "name": "Gmail account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Shape Lead JSON1": {
+      "main": [
+        [
+          {
+            "node": "Create an event",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Log to Google Sheets",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Send Confirmation Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lead Webhook1": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent": {
+      "main": [
+        [
+          {
+            "node": "Shape Lead JSON1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Gemini Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "750e66fa-24fc-4ad7-be61-0b8919be0675",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "673e89a6e7e02117f20bc8db59c7d72ad0b28e669177808d2204cd0faae8358d"
+  },
+  "id": "myUnr8Q082EV63Kx",
+  "tags": []
+}
